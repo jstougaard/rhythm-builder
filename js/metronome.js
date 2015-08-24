@@ -18,6 +18,26 @@ var notesInQueue = [];      // the notes that have been put into the web audio,
                             // and may or may not have played yet. {note, time}
 var timerWorker = null;     // The Web Worker used to fire timer messages
 
+var beatMarkers = [];
+var availableTones = [
+    {
+        color: "#ccc" // No tone played
+    },
+    {
+        frequency: 220.0,
+        color: "#2E5B7F"
+    }, 
+    {
+        frequency: 440.0,
+        color: "#4080B4"
+    }, 
+    {
+        frequency: 880.0,
+        color: "#52A3E6"
+    }
+];
+
+var stateChanged = false;
 
 // First, let's shim the requestAnimationFrame API, with a setTimeout fallback
 window.requestAnimFrame = (function(){
@@ -55,12 +75,12 @@ function scheduleNote( beatNumber, time ) {
     // create an oscillator
     var osc = audioContext.createOscillator();
     osc.connect( audioContext.destination );
-    if (beatNumber % 16 === 0)    // beat 0 == low pitch
-        osc.frequency.value = 880.0;
-    else if (beatNumber % 4 === 0 )    // quarter notes = medium pitch
-        osc.frequency.value = 440.0;
-    else                        // other 16th notes = high pitch
-        osc.frequency.value = 220.0;
+
+    var marker = beatMarkers[beatNumber],
+        tone = availableTones[marker.tone];
+    if (!tone.frequency) return;
+
+    osc.frequency.value = tone.frequency;
 
     osc.start( time );
     osc.stop( time + noteLength );
@@ -108,19 +128,44 @@ function draw() {
     }
 
     // We only need to draw if the note has moved.
-    if (last16thNoteDrawn != currentNote) {
+    if (last16thNoteDrawn != currentNote || stateChanged) {
         var x = Math.floor( canvas.width / 18 );
         canvasContext.clearRect(0,0,canvas.width, canvas.height); 
-        for (var i=0; i<16; i++) {
-            canvasContext.fillStyle = ( currentNote == i ) ? 
-                ((currentNote%4 === 0)?"red":"blue") : "black";
-            canvasContext.fillRect( x * (i+1), x, x/2, x/2 );
-        }
+
+        beatMarkers.forEach(function(box, i) {
+            // Draw selector box
+
+            canvasContext.fillStyle = availableTones[box.tone].color;
+            canvasContext.fillRect( box.left, box.top, box.width, box.height );
+
+            // Draw indicator box
+            canvasContext.fillStyle = currentNote == i ? '#999' : 'black';
+            canvasContext.fillRect( box.left, box.top + box.height*1.5, box.width, box.height/3 );
+        });
+            //canvasContext.fillStyle = ( currentNote == i ) ? 
+            //    ((currentNote%4 === 0)?"red":"blue") : "black";
+            
+        stateChanged = false;
         last16thNoteDrawn = currentNote;
     }
 
     // set up to draw again
     requestAnimFrame(draw);
+}
+
+function initBeatMarkers() {
+    beatMarkers = []; // TODO: Consider keeping state
+
+    var x = Math.floor( canvas.width / 18 );
+    for (var i=0; i<16; i++) {
+        beatMarkers.push({
+            left: x * (i+1),
+            top: x,
+            width: x/2,
+            height: x/2,
+            tone: 0
+        });
+    }
 }
 
 function init(){
@@ -135,6 +180,23 @@ function init(){
     container.appendChild(canvas);    
     canvasContext.strokeStyle = "#ffffff";
     canvasContext.lineWidth = 2;
+
+    initBeatMarkers();
+
+    canvas.addEventListener('click', function(e) {
+        //console.log("Canvas clicked", e);
+        var x = event.offsetX,
+            y = event.offsetY;
+
+        // Determine clicked element
+        beatMarkers.forEach(function(box, i) {
+            if (y > box.top && y < box.top + box.height && x > box.left && x < box.left + box.width) {
+                box.tone = (box.tone+1)%availableTones.length;
+                stateChanged = true;         
+            }
+        });
+
+    }, false);
 
     // NOTE: THIS RELIES ON THE MONKEYPATCH LIBRARY BEING LOADED FROM
     // Http://cwilso.github.io/AudioContext-MonkeyPatch/AudioContextMonkeyPatch.js
