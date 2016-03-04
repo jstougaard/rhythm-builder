@@ -10,7 +10,7 @@ var scheduleAheadTime = 0.1;    // How far ahead to schedule audio (sec)
                             // with next interval (in case the timer is late)
 var nextNoteTime = 0.0;     // when the next note is due.
 var noteResolution = 0;     // 0 == 16th, 1 == 8th, 2 == quarter note
-var noteLength = 0.05;      // length of "beep" (in seconds)
+var noteLength = 0.10;      // length of "beep" (in seconds)
 var canvas,                 // the canvas element
     canvasContext;          // canvasContext is the canvas' context 2D
 var last16thNoteDrawn = -1; // the last "box" we drew on the screen
@@ -19,25 +19,19 @@ var notesInQueue = [];      // the notes that have been put into the web audio,
 var timerWorker = null;     // The Web Worker used to fire timer messages
 
 var beatMarkers = [];
-var availableTones = [
-    {
-        color: "#ccc" // No tone played
-    },
-    {
-        frequency: 220.0,
-        color: "#2E5B7F"
-    }, 
-    {
-        frequency: 440.0,
-        color: "#4080B4"
-    }, 
-    {
-        frequency: 880.0,
-        color: "#52A3E6"
-    }
-];
-
+//var availableTones = [ 880.0, 440.0, 220.0 ];
+//var availableTones = [ 261.626, 293.665, 329.628, 391.995, 440.000 ];
+var availableTones = [ 523.251, 587.330, 659.255, 783.991, 880.000 ];
+var toneStage = {
+    top: null,
+    left: null,
+    width: null,
+    height: null,
+    tone: 0,
+    linePosition: 0
+};
 var stateChanged = false;
+var isMouseDown = false;
 
 // First, let's shim the requestAnimationFrame API, with a setTimeout fallback
 window.requestAnimFrame = (function(){
@@ -76,11 +70,11 @@ function scheduleNote( beatNumber, time ) {
     var osc = audioContext.createOscillator();
     osc.connect( audioContext.destination );
 
-    var marker = beatMarkers[beatNumber],
-        tone = availableTones[marker.tone];
-    if (!tone.frequency) return;
+    var marker = beatMarkers[beatNumber];
+    if (!marker.active) return;
 
-    osc.frequency.value = tone.frequency;
+
+    osc.frequency.value = availableTones[toneStage.tone];
 
     osc.start( time );
     osc.stop( time + noteLength );
@@ -128,20 +122,37 @@ function draw() {
     }
 
     // We only need to draw if the note has moved.
-    if (last16thNoteDrawn != currentNote || stateChanged) {
+    if (last16thNoteDrawn != currentNote || stateChanged || isMouseDown) {
         var x = Math.floor( canvas.width / 18 );
         canvasContext.clearRect(0,0,canvas.width, canvas.height); 
 
         beatMarkers.forEach(function(box, i) {
             // Draw selector box
 
-            canvasContext.fillStyle = availableTones[box.tone].color;
+            canvasContext.fillStyle = box.active ? "blue" : "#ccc";
             canvasContext.fillRect( box.left, box.top, box.width, box.height );
 
             // Draw indicator box
-            canvasContext.fillStyle = currentNote == i ? '#999' : 'black';
-            canvasContext.fillRect( box.left, box.top + box.height*1.5, box.width, box.height/3 );
+            if (currentNote == i && isPlaying) {
+                canvasContext.fillStyle = '#999';
+                canvasContext.fillRect( box.left, box.top - box.height/3 - 5, box.width, box.height/3 );
+            }
+            
         });
+
+        // Draw tone stage
+        canvasContext.fillStyle = '#ccc';
+        canvasContext.fillRect( toneStage.left, toneStage.top, toneStage.width, toneStage.height );
+        canvasContext.fillStyle = '#ddd';
+        var toneAreaHeight = Math.floor(toneStage.height / availableTones.length);
+        for(var i=1;i<availableTones.length;i++) {
+            canvasContext.fillRect( toneStage.left, toneStage.top + toneAreaHeight * i, toneStage.width, 1 );
+        }
+
+        // Draw tone line
+        canvasContext.fillStyle = "blue";
+        canvasContext.fillRect( toneStage.left, toneStage.linePosition, toneStage.width, 2 );
+
             //canvasContext.fillStyle = ( currentNote == i ) ? 
             //    ((currentNote%4 === 0)?"red":"blue") : "black";
             
@@ -159,13 +170,34 @@ function initBeatMarkers() {
     var x = Math.floor( canvas.width / 18 );
     for (var i=0; i<16; i++) {
         beatMarkers.push({
-            left: x * (i+1),
+            left: x * (i+1) + x/4,
             top: x,
             width: x/2,
             height: x/2,
-            tone: 0
+            active: 0
         });
     }
+}
+function initToneStage() {
+    var padding = Math.floor( canvas.width / 18 ) * 1.25;
+    toneStage.left = padding;
+    toneStage.width = canvas.width - 2*padding;
+    toneStage.top = 1.5*padding;
+    toneStage.height = 2*padding;
+
+    toneStage.linePosition = 2*padding;
+}
+
+function getMousePos(canvas, evt) {
+    var rect = canvas.getBoundingClientRect();
+    return {
+      x: evt.clientX - rect.left,
+      y: evt.clientY - rect.top
+    };
+}
+
+function isInToneStage(mousePos) {
+    return mousePos.x >= toneStage.left && mousePos.x <= toneStage.left+toneStage.width && mousePos.y >= toneStage.top && mousePos.y <= toneStage.top + toneStage.height;
 }
 
 function init(){
@@ -182,6 +214,7 @@ function init(){
     canvasContext.lineWidth = 2;
 
     initBeatMarkers();
+    initToneStage();
 
     canvas.addEventListener('click', function(e) {
         //console.log("Canvas clicked", e);
@@ -191,12 +224,39 @@ function init(){
         // Determine clicked element
         beatMarkers.forEach(function(box, i) {
             if (y > box.top && y < box.top + box.height && x > box.left && x < box.left + box.width) {
-                box.tone = (box.tone+1)%availableTones.length;
+                //box.tone = (box.tone+1)%availableTones.length;
+                box.active = !box.active;
                 stateChanged = true;         
             }
         });
 
     }, false);
+
+    // Detect mouse move in stage
+    
+    canvas.addEventListener('mousedown', function(evt) {
+        var mousePos = getMousePos(canvas, evt);
+        if (isInToneStage(mousePos)) {
+            console.log("Within bounding box");
+            isMouseDown = true;
+        }
+      }, false);
+    canvas.addEventListener('mouseup', function(evt) {
+        isMouseDown = false;
+    });
+
+    canvas.addEventListener('mousemove', function(evt) {
+        if (!isMouseDown) return;
+        
+        var mousePos = getMousePos(canvas, evt);
+        if (!isInToneStage(mousePos)) return;
+        
+        toneStage.linePosition = mousePos.y;
+
+        toneStage.tone = Math.min(Math.floor( (toneStage.linePosition-toneStage.top) / (toneStage.height / availableTones.length) ), availableTones.length - 1);
+        //var message = 'Mouse position: ' + mousePos.x + ',' + mousePos.y;
+        //console.log(message, toneStage.tone);
+      }, false);
 
     // NOTE: THIS RELIES ON THE MONKEYPATCH LIBRARY BEING LOADED FROM
     // Http://cwilso.github.io/AudioContext-MonkeyPatch/AudioContextMonkeyPatch.js
